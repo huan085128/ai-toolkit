@@ -262,7 +262,7 @@ if __name__ == "__main__":
             control_gen = ControlGenerator(torch.device('cuda'))
             control_gen.debug = args.debug
             control_gen.regen = args.regen
-            control_path = control_gen.get_control_path(img_path, control)
+            control_path = control_gen.get_(img_path, control)
             end = time.time()
             # dont track for first 2 images
             if idx < 2:

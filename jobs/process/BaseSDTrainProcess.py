@@ -7,6 +7,7 @@ import shutil
 from collections import OrderedDict
 import os
 import re
+import time
 import traceback
 from typing import Union, List, Optional
 
@@ -456,72 +457,132 @@ class BaseSDTrainProcess(BaseTrainProcess):
     def end_step_hook(self):
         pass
 
+    # def save(self, step=None):
+    #     self.accelerator.wait_for_everyone()
+    #     if not self.accelerator.is_main_process:
+    #         self.accelerator.wait_for_everyone()
+    #         return
+    #     flush()
+    #     if self.ema is not None:
+    #         # always save params as ema
+    #         self.ema.eval()
+
+    #     if not os.path.exists(self.save_root):
+    #         os.makedirs(self.save_root, exist_ok=True)
+
+    #     step_num = ''
+    #     if step is not None:
+    #         self.last_save_step = step
+    #         # zeropad 9 digits
+    #         step_num = f"_{str(step).zfill(9)}"
+
+    #     self.update_training_metadata()
+    #     filename = f'{self.job.name}{step_num}.safetensors'
+    #     file_path = os.path.join(self.save_root, filename)
+
+    #     save_meta = copy.deepcopy(self.meta)
+    #     # get extra meta
+    #     if self.adapter is not None and isinstance(self.adapter, CustomAdapter):
+    #         additional_save_meta = self.adapter.get_additional_save_metadata()
+    #         if additional_save_meta is not None:
+    #             for key, value in additional_save_meta.items():
+    #                 save_meta[key] = value
+
+    #     # prepare meta
+    #     save_meta = get_meta_for_safetensors(save_meta, self.job.name)
+    #     if not self.is_fine_tuning:
+    #         if self.network is not None:
+    #             lora_name = self.job.name
+    #             if self.named_lora:
+    #                 # add _lora to name
+    #                 lora_name += '_LoRA'
+
+    #             filename = f'{lora_name}{step_num}.safetensors'
+    #             file_path = os.path.join(self.save_root, filename)
+    #             prev_multiplier = self.network.multiplier
+    #             self.network.multiplier = 1.0
+
+    #             # if we are doing embedding training as well, add that
+    #             embedding_dict = self.embedding.state_dict() if self.embedding else None
+    #             self.network.save_weights(
+    #                 file_path,
+    #                 dtype=get_torch_dtype(self.save_config.dtype),
+    #                 metadata=save_meta,
+    #                 extra_state_dict=embedding_dict
+    #             )
+    #             self.network.multiplier = prev_multiplier
+    #             # if we have an embedding as well, pair it with the network
+
+    #         # even if added to lora, still save the trigger version
+    #         if self.embedding is not None:
+    #             emb_filename = f'{self.embed_config.trigger}{step_num}.safetensors'
+    #             emb_file_path = os.path.join(self.save_root, emb_filename)
+    #             # for combo, above will get it
+    #             # set current step
+    #             self.embedding.step = self.step_num
+    #             # change filename to pt if that is set
+    #             if self.embed_config.save_format == "pt":
+    #                 # replace extension
+    #                 emb_file_path = os.path.splitext(emb_file_path)[0] + ".pt"
+    #             self.embedding.save(emb_file_path)
+
     def save(self, step=None):
+        rank = self.accelerator.process_index
+        step_info = f"step={step}" if step is not None else "step=NA"
+        t0 = time.perf_counter()
+        print_acc(f"[rank{rank}] ➡️  enter save()   {step_info}")
+
+        # self.accelerator.wait_for_everyone()
+        t1 = time.perf_counter()
+        print_acc(f"[rank{rank}] barrier‑in   Δt={t1-t0:.2f}s")
+
         if not self.accelerator.is_main_process:
+            print_acc(f"[rank{rank}] exit (non‑main) after barrier    total={time.perf_counter()-t0:.2f}s")
             return
+
         flush()
         if self.ema is not None:
-            # always save params as ema
             self.ema.eval()
 
-        if not os.path.exists(self.save_root):
-            os.makedirs(self.save_root, exist_ok=True)
+        t_dir = time.perf_counter()
+        os.makedirs(self.save_root, exist_ok=True)
+        print_acc(f"[rank{rank}] mkdirs        Δt={time.perf_counter()-t_dir:.2f}s")
 
-        step_num = ''
-        if step is not None:
-            self.last_save_step = step
-            # zeropad 9 digits
-            step_num = f"_{str(step).zfill(9)}"
-
+        step_num = f"_{str(step).zfill(9)}" if step is not None else ""
         self.update_training_metadata()
-        filename = f'{self.job.name}{step_num}.safetensors'
-        file_path = os.path.join(self.save_root, filename)
-
         save_meta = copy.deepcopy(self.meta)
-        # get extra meta
-        if self.adapter is not None and isinstance(self.adapter, CustomAdapter):
-            additional_save_meta = self.adapter.get_additional_save_metadata()
-            if additional_save_meta is not None:
-                for key, value in additional_save_meta.items():
-                    save_meta[key] = value
 
-        # prepare meta
-        save_meta = get_meta_for_safetensors(save_meta, self.job.name)
         if not self.is_fine_tuning:
             if self.network is not None:
-                lora_name = self.job.name
-                if self.named_lora:
-                    # add _lora to name
-                    lora_name += '_LoRA'
-
-                filename = f'{lora_name}{step_num}.safetensors'
+                t_lora = time.perf_counter()
+                lora_name = self.job.name + ('_LoRA' if self.named_lora else '')
+                filename = f"{lora_name}{step_num}.safetensors"
                 file_path = os.path.join(self.save_root, filename)
+
                 prev_multiplier = self.network.multiplier
                 self.network.multiplier = 1.0
-
-                # if we are doing embedding training as well, add that
+                t_emb = time.perf_counter()
                 embedding_dict = self.embedding.state_dict() if self.embedding else None
+                print_acc(f"[rank{rank}] embedding.state_dict   Δt={time.perf_counter()-t_emb:.2f}s  → {file_path}")
+
                 self.network.save_weights(
                     file_path,
                     dtype=get_torch_dtype(self.save_config.dtype),
-                    metadata=save_meta,
+                    metadata=get_meta_for_safetensors(save_meta, self.job.name),
                     extra_state_dict=embedding_dict
                 )
                 self.network.multiplier = prev_multiplier
-                # if we have an embedding as well, pair it with the network
+                print_acc(f"[rank{rank}] save LoRA    Δt={time.perf_counter()-t_lora:.2f}s  → {file_path}")
 
-            # even if added to lora, still save the trigger version
             if self.embedding is not None:
-                emb_filename = f'{self.embed_config.trigger}{step_num}.safetensors'
-                emb_file_path = os.path.join(self.save_root, emb_filename)
-                # for combo, above will get it
-                # set current step
-                self.embedding.step = self.step_num
-                # change filename to pt if that is set
+                t_emb = time.perf_counter()
+                emb_filename = f"{self.embed_config.trigger}{step_num}.safetensors"
+                emb_path = os.path.join(self.save_root, emb_filename)
                 if self.embed_config.save_format == "pt":
-                    # replace extension
-                    emb_file_path = os.path.splitext(emb_file_path)[0] + ".pt"
-                self.embedding.save(emb_file_path)
+                    emb_path = os.path.splitext(emb_path)[0] + ".pt"
+                self.embedding.step = self.step_num
+                self.embedding.save(emb_path)
+                print_acc(f"[rank{rank}] save Emb     Δt={time.perf_counter()-t_emb:.2f}s  → {emb_path}")
             
             if self.decorator is not None:
                 dec_filename = f'{self.job.name}{step_num}.safetensors'
@@ -651,6 +712,8 @@ class BaseSDTrainProcess(BaseTrainProcess):
         if self.ema is not None:
             self.ema.train()
         flush()
+
+        # self.accelerator.wait_for_everyone()
 
     # Called before the model is loaded
     def hook_before_model_load(self):
@@ -2121,107 +2184,108 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     with self.timer('batch_cleanup'):
                         batch.cleanup()
 
-                # don't do on first step
+                # don't do on first step    
                 if self.step_num != self.start_step:
-                    if is_sample_step or is_save_step:
-                        self.accelerator.wait_for_everyone()
-                    if is_sample_step:
-                        if self.progress_bar is not None:
-                            self.progress_bar.pause()
-                        flush()
-                        # print above the progress bar
-                        if self.train_config.free_u:
-                            self.sd.pipeline.disable_freeu()
-                        self.sample(self.step_num)
-                        if self.train_config.unload_text_encoder:
-                            # make sure the text encoder is unloaded
-                            self.sd.text_encoder_to('cpu')
-                        flush()
+                    if self.accelerator.is_main_process:    
+                        if is_sample_step:
+                            if self.progress_bar is not None:
+                                self.progress_bar.pause()
+                            flush()
+                            # print above the progress bar
+                            if self.train_config.free_u:
+                                self.sd.pipeline.disable_freeu()
+                            self.sample(self.step_num)
+                            if self.train_config.unload_text_encoder:
+                                # make sure the text encoder is unloaded
+                                self.sd.text_encoder_to('cpu')
+                            flush()
 
-                        self.ensure_params_requires_grad()
-                        if self.progress_bar is not None:
-                            self.progress_bar.unpause()
+                            self.ensure_params_requires_grad()
+                            if self.progress_bar is not None:
+                                self.progress_bar.unpause()
 
-                    if is_save_step:
-                        self.accelerator
-                        # print above the progress bar
-                        if self.progress_bar is not None:
-                            self.progress_bar.pause()
-                        print_acc(f"\nSaving at step {self.step_num}")
-                        self.save(self.step_num)
-                        self.ensure_params_requires_grad()
-                        # clear any grads
-                        optimizer.zero_grad()
-                        flush()
-                        flush_next = True
-                        if self.progress_bar is not None:
-                            self.progress_bar.unpause()
+                        if is_save_step:
+                            # print above the progress bar
+                            if self.progress_bar is not None:
+                                self.progress_bar.pause()
+                            print_acc(f"\nSaving at step {self.step_num}")
+                            self.save(self.step_num)
+                            self.ensure_params_requires_grad()
+                            # clear any grads
+                            optimizer.zero_grad()
+                            flush()
+                            flush_next = True
+                            if self.progress_bar is not None:
+                                self.progress_bar.unpause()
 
-                    if self.logging_config.log_every and self.step_num % self.logging_config.log_every == 0:
-                        if self.progress_bar is not None:
-                            self.progress_bar.pause()
-                        with self.timer('log_to_tensorboard'):
-                            # log to tensorboard
+                        if self.logging_config.log_every and self.step_num % self.logging_config.log_every == 0:
+                            if self.progress_bar is not None:
+                                self.progress_bar.pause()
+                            with self.timer('log_to_tensorboard'):
+                                # log to tensorboard
+                                if self.accelerator.is_main_process:
+                                    if self.writer is not None:
+                                        for key, value in loss_dict.items():
+                                            self.writer.add_scalar(f"{key}", value, self.step_num)
+                                        self.writer.add_scalar(f"lr", learning_rate, self.step_num)
+                                    if self.progress_bar is not None:
+                                        self.progress_bar.unpause()
+                            
                             if self.accelerator.is_main_process:
-                                if self.writer is not None:
-                                    for key, value in loss_dict.items():
-                                        self.writer.add_scalar(f"{key}", value, self.step_num)
-                                    self.writer.add_scalar(f"lr", learning_rate, self.step_num)
-                                if self.progress_bar is not None:
-                                    self.progress_bar.unpause()
-                        
-                        if self.accelerator.is_main_process:
-                            # log to logger
-                            self.logger.log({
-                                'learning_rate': learning_rate,
-                            })
-                            for key, value in loss_dict.items():
+                                # log to logger
                                 self.logger.log({
-                                    f'loss/{key}': value,
+                                    'learning_rate': learning_rate,
                                 })
-                    elif self.logging_config.log_every is None:
-                        if self.accelerator.is_main_process:
-                            # log every step
-                            self.logger.log({
-                                'learning_rate': learning_rate,
-                            })
-                            for key, value in loss_dict.items():
+                                for key, value in loss_dict.items():
+                                    self.logger.log({
+                                        f'loss/{key}': value,
+                                    })
+                        elif self.logging_config.log_every is None:
+                            if self.accelerator.is_main_process:
+                                # log every step
                                 self.logger.log({
-                                    f'loss/{key}': value,
+                                    'learning_rate': learning_rate,
                                 })
+                                for key, value in loss_dict.items():
+                                    self.logger.log({
+                                        f'loss/{key}': value,
+                                    })
 
 
-                    if self.performance_log_every > 0 and self.step_num % self.performance_log_every == 0:
-                        if self.progress_bar is not None:
-                            self.progress_bar.pause()
-                        # print the timers and clear them
-                        self.timer.print()
-                        self.timer.reset()
-                        if self.progress_bar is not None:
-                            self.progress_bar.unpause()
-                
-                # commit log
-                if self.accelerator.is_main_process:
-                    self.logger.commit(step=self.step_num)
+                        if self.performance_log_every > 0 and self.step_num % self.performance_log_every == 0:
+                            if self.progress_bar is not None:
+                                self.progress_bar.pause()
+                            # print the timers and clear them
+                            self.timer.print()
+                            self.timer.reset()
+                            if self.progress_bar is not None:
+                                self.progress_bar.unpause()
+                    
+                    # commit log
+                    if self.accelerator.is_main_process:
+                        self.logger.commit(step=self.step_num)
 
-                # sets progress bar to match out step
-                if self.progress_bar is not None:
-                    self.progress_bar.update(step - self.progress_bar.n)
+                    # sets progress bar to match out step
+                    if self.progress_bar is not None:
+                        self.progress_bar.update(step - self.progress_bar.n)
 
-                #############################
-                # End of step
-                #############################
+                    #############################
+                    # End of step
+                    #############################
 
-                # update various steps
-                self.step_num = step + 1
-                self.grad_accumulation_step += 1
-                self.end_step_hook()
+                    # update various steps
+                    self.step_num = step + 1
+                    self.grad_accumulation_step += 1
+                    self.end_step_hook()
+
+                # if is_sample_step or is_save_step:
+                #     self.accelerator.wait_for_everyone()
 
 
         ###################################################################
         ##  END TRAIN LOOP
         ###################################################################
-        self.accelerator.wait_for_everyone()
+        # self.accelerator.wait_for_everyone()
         if self.progress_bar is not None:
             self.progress_bar.close()
         if self.train_config.free_u:
