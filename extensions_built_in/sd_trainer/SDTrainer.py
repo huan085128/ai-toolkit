@@ -430,7 +430,7 @@ class SDTrainer(BaseSDTrainProcess):
             # target = (batch.latents - noise).detach()
         else:
             target = noise
-            
+          
         if self.dfe is not None:
             if self.dfe.version == 1:
                 model = self.sd
@@ -992,6 +992,7 @@ class SDTrainer(BaseSDTrainProcess):
         self,
         noisy_latents: torch.Tensor,
         timesteps: Union[int, torch.Tensor] = 1,
+        reg_timesteps: Union[int, torch.Tensor] = 0,
         conditional_embeds: Union[PromptEmbeds, None] = None,
         unconditional_embeds: Union[PromptEmbeds, None] = None,
         batch: Optional['DataLoaderBatchDTO'] = None,
@@ -1007,6 +1008,7 @@ class SDTrainer(BaseSDTrainProcess):
             conditional_embeddings=conditional_embeds.to(self.device_torch, dtype=dtype),
             unconditional_embeddings=unconditional_embeds,
             timestep=timesteps,
+            reg_timestep=reg_timesteps,
             guidance_scale=self.train_config.cfg_scale,
             guidance_embedding_scale=guidance_embedding_scale,
             detach_unconditional=False,
@@ -1037,7 +1039,7 @@ class SDTrainer(BaseSDTrainProcess):
                 if self.sd.text_encoder.dtype != self.sd.te_torch_dtype:
                     self.sd.text_encoder.to(self.sd.te_torch_dtype)
 
-            noisy_latents, noise, timesteps, conditioned_prompts, imgs = self.process_general_training_batch(batch)
+            noisy_latents, noise, timesteps, reg_timesteps, conditioned_prompts, imgs = self.process_general_training_batch(batch)
             if self.train_config.do_cfg or self.train_config.do_random_cfg:
                 # pick random negative prompts
                 if self.negative_prompt_pool is not None:
@@ -1203,6 +1205,7 @@ class SDTrainer(BaseSDTrainProcess):
             noisy_latents_list = torch.chunk(noisy_latents, batch_size, dim=0)
             noise_list = torch.chunk(noise, batch_size, dim=0)
             timesteps_list = torch.chunk(timesteps, batch_size, dim=0)
+            reg_timesteps_list = torch.chunk(reg_timesteps, batch_size, dim=0)
             conditioned_prompts_list = [[prompt] for prompt in prompts_1]
             if imgs is not None:
                 imgs_list = torch.chunk(imgs, batch_size, dim=0)
@@ -1226,6 +1229,7 @@ class SDTrainer(BaseSDTrainProcess):
             noisy_latents_list = [noisy_latents]
             noise_list = [noise]
             timesteps_list = [timesteps]
+            reg_timesteps_list = [reg_timesteps]
             conditioned_prompts_list = [prompts_1]
             imgs_list = [imgs]
             adapter_images_list = [adapter_images]
@@ -1236,10 +1240,11 @@ class SDTrainer(BaseSDTrainProcess):
             else:
                 prompt_2_list = [prompts_2]
 
-        for noisy_latents, noise, timesteps, conditioned_prompts, imgs, adapter_images, clip_images, mask_multiplier, prompt_2 in zip(
+        for noisy_latents, noise, timesteps, reg_timesteps, conditioned_prompts, imgs, adapter_images, clip_images, mask_multiplier, prompt_2 in zip(
                 noisy_latents_list,
                 noise_list,
                 timesteps_list,
+                reg_timesteps_list,
                 conditioned_prompts_list,
                 imgs_list,
                 adapter_images_list,
@@ -1734,6 +1739,7 @@ class SDTrainer(BaseSDTrainProcess):
                         noise_pred = self.predict_noise(
                             noisy_latents=noisy_latents.to(self.device_torch, dtype=dtype),
                             timesteps=timesteps,
+                            reg_timesteps=reg_timesteps,
                             conditional_embeds=conditional_embeds.to(self.device_torch, dtype=dtype),
                             unconditional_embeds=unconditional_embeds,
                             batch=batch,

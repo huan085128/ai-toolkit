@@ -337,6 +337,7 @@ class TrainConfig:
         self.num_train_timesteps = kwargs.get('num_train_timesteps', 1000)
         # automatically adapte the vae scaling based on the image norm
         self.adaptive_scaling_factor = kwargs.get('adaptive_scaling_factor', False)
+        self.reg_timestep = kwargs.get('reg_timestep', 0)
 
         # dropout that happens before encoding. It functions independently per text encoder
         self.prompt_dropout_prob = kwargs.get('prompt_dropout_prob', 0.0)
@@ -759,11 +760,15 @@ class DatasetConfig:
         self.control_path: Union[str,List[str]] = kwargs.get('control_path', None)  # depth maps, etc
         if self.control_path == '':
             self.control_path = None
+        self.origin_control_path: Union[str,List[str]] = kwargs.get('origin_control_path', None)
+        if self.origin_control_path == '':
+            self.origin_control_path = None
         # inpaint images should be webp/png images with alpha channel. The alpha 0 (invisible) section will
         # be the part conditioned to be inpainted. The alpha 1 (visible) section will be the part that is ignored
         self.inpaint_path: Union[str,List[str]] = kwargs.get('inpaint_path', None)
         # instead of cropping ot match image, it will serve the full size control image (clip images ie for ip adapters)
         self.full_size_control_images: bool = kwargs.get('full_size_control_images', False)
+        self.full_size_origin_control_images: bool = kwargs.get('full_size_origin_control_images', False)
         self.alpha_mask: bool = kwargs.get('alpha_mask', False)  # if true, will use alpha channel as mask
         self.mask_path: str = kwargs.get('mask_path',
                                          None)  # focus mask (black and white. White has higher loss than black)

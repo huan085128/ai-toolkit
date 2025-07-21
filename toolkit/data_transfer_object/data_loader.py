@@ -12,7 +12,7 @@ from PIL.ImageOps import exif_transpose
 from toolkit import image_utils
 from toolkit.basic import get_quick_signature_string
 from toolkit.dataloader_mixins import CaptionProcessingDTOMixin, ImageProcessingDTOMixin, LatentCachingFileItemDTOMixin, \
-    ControlFileItemDTOMixin, ArgBreakMixin, PoiFileItemDTOMixin, MaskFileItemDTOMixin, AugmentationFileItemDTOMixin, \
+    ControlFileItemDTOMixin, OriginControlFileItemDTOMixin, ArgBreakMixin, PoiFileItemDTOMixin, MaskFileItemDTOMixin, AugmentationFileItemDTOMixin, \
     UnconditionalFileItemDTOMixin, ClipImageFileItemDTOMixin, InpaintControlFileItemDTOMixin
 
 
@@ -35,6 +35,7 @@ class FileItemDTO(
     CaptionProcessingDTOMixin,
     ImageProcessingDTOMixin,
     ControlFileItemDTOMixin,
+    OriginControlFileItemDTOMixin,
     InpaintControlFileItemDTOMixin,
     ClipImageFileItemDTOMixin,
     MaskFileItemDTOMixin,
@@ -125,6 +126,7 @@ class FileItemDTO(
         self.tensor = None
         self.cleanup_latent()
         self.cleanup_control()
+        self.cleanup_origin_control()
         self.cleanup_inpaint()
         self.cleanup_clip_image()
         self.cleanup_mask()
@@ -155,7 +157,6 @@ class DataLoaderBatchDTO:
             self.latents: Union[torch.Tensor, None] = None
             if is_latents_cached:
                 self.latents = torch.cat([x.get_latent().unsqueeze(0) for x in self.file_items])
-            self.control_tensor: Union[torch.Tensor, None] = None
             # if self.file_items[0].control_tensor is not None:
             # if any have a control tensor, we concatenate them
             if any([x.control_tensor is not None for x in self.file_items]):
@@ -172,6 +173,22 @@ class DataLoaderBatchDTO:
                     else:
                         control_tensors.append(x.control_tensor)
                 self.control_tensor = torch.cat([x.unsqueeze(0) for x in control_tensors])
+            
+            self.origin_control_tensor: Union[torch.Tensor, None] = None
+            if any([x.origin_control_tensor is not None for x in self.file_items]):
+                # find one to use as a base
+                base_origin_control_tensor = None
+                for x in self.file_items:
+                    if x.origin_control_tensor is not None:
+                        base_origin_control_tensor = x.origin_control_tensor
+                        break
+                origin_control_tensors = []
+                for x in self.file_items:
+                    if x.origin_control_tensor is None:
+                        origin_control_tensors.append(torch.zeros_like(base_origin_control_tensor))
+                    else:
+                        origin_control_tensors.append(x.origin_control_tensor)
+                self.origin_control_tensor = torch.cat([x.unsqueeze(0) for x in origin_control_tensors])
                 
             self.inpaint_tensor: Union[torch.Tensor, None] = None
             if any([x.inpaint_tensor is not None for x in self.file_items]):
@@ -299,5 +316,6 @@ class DataLoaderBatchDTO:
         del self.latents
         del self.tensor
         del self.control_tensor
+        del self.origin_control_tensor
         for file_item in self.file_items:
             file_item.cleanup()

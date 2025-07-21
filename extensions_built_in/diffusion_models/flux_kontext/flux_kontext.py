@@ -247,17 +247,43 @@ class FluxKontextModel(BaseModel):
         text_embeddings: PromptEmbeds,
         guidance_embedding_scale: float,
         bypass_guidance_embedding: bool,
+        reg_timestep: torch.Tensor,
         **kwargs
     ):
         with torch.no_grad():
             bs, c, h, w = latent_model_input.shape
             # if we have a control on the channel dimension, put it on the batch for packing
             has_control = False
-            if latent_model_input.shape[1] == 32:
-                # chunk it and stack it on batch dimension
-                # dont update batch size for img_its
-                lat, control = torch.chunk(latent_model_input, 2, dim=1)
-                latent_model_input = torch.cat([lat, control], dim=0)
+            c = latent_model_input.shape[1]
+            block = 16                         
+
+            if c % block == 0 and c // block >= 2:
+                n = c // block                    
+                chunks = torch.chunk(latent_model_input, n, dim=1)
+                lat = chunks[0]
+
+                if n == 2:
+                    # 只有 control，没有 origin_control
+                    control, = chunks[1:]
+                    latent_model_input = torch.cat([lat, control], dim=0)
+
+                elif n == 3:
+                    # 同时有 control 和 origin_control
+                    control, origin_control = chunks[1:]
+
+                    # (B,) → (B,1,1,1) 便于广播到 (B,C,H,W)
+                    mask = (timestep < reg_timestep).view(-1, 1, 1, 1)      # True → 选 origin_control
+
+                    # 逐样本选择：True 用 origin_control，否则用 control
+                    selected = torch.where(mask, origin_control, control)   # 形状仍是 (B,C,H,W)
+
+                    # 最终按 batch 维拼接：lat 在上，selected 在下 → 2B 条样本
+                    latent_model_input = torch.cat([lat, selected], dim=0)
+
+                else:
+                    # n > 3 的兜底处理，逻辑保持不变
+                    latent_model_input = torch.cat(chunks, dim=0)
+
                 has_control = True
 
             latent_model_input_packed = rearrange(
@@ -279,7 +305,6 @@ class FluxKontextModel(BaseModel):
                 ctrl_ids[..., 0] = 1
                 img_ids = torch.cat([img_ids, ctrl_ids], dim=1)
                 
-
             txt_ids = torch.zeros(
                 bs, text_embeddings.text_embeds.shape[1], 3).to(self.device_torch)
 
@@ -390,29 +415,52 @@ class FluxKontextModel(BaseModel):
         noise = kwargs.get('noise')
         batch = kwargs.get('batch')
         return (noise - batch.latents).detach()
-    
-    def condition_noisy_latents(self, latents: torch.Tensor, batch:'DataLoaderBatchDTO'):
+
+    def condition_noisy_latents(self, latents: torch.Tensor, batch: "DataLoaderBatchDTO"):
+        """
+        将 control / origin_control 编码成 VAE latent 后与主 latent 在通道维拼接。
+        - control_tensor、origin_control_tensor 先转到 VAE 所在设备并归一化到 [-1,1]。
+        - 若尺寸与目标 H×W 不一致，按 bilinear 插值到相同分辨率。
+        """
         with torch.no_grad():
             control_tensor = batch.control_tensor
-            if control_tensor is not None:
-                self.vae.to(self.device_torch)
-                # we are not packed here, so we just need to pass them so we can pack them later
-                control_tensor = control_tensor * 2 - 1
-                control_tensor = control_tensor.to(self.vae_device_torch, dtype=self.torch_dtype)
-                
-                # if it is not the size of batch.tensor, (bs,ch,h,w) then we need to resize it
-                if batch.tensor is not None:
-                    target_h, target_w = batch.tensor.shape[2], batch.tensor.shape[3]
-                else:
-                    # When caching latents, batch.tensor is None. We get the size from the file_items instead.
-                    target_h = batch.file_items[0].crop_height
-                    target_w = batch.file_items[0].crop_width
+            origin_control_tensor = batch.origin_control_tensor
 
-                if control_tensor.shape[2] != target_h or control_tensor.shape[3] != target_w:
-                    control_tensor = F.interpolate(control_tensor, size=(target_h, target_w), mode='bilinear')
-                    
-                control_latent = self.encode_images(control_tensor).to(latents.device, latents.dtype)
-                latents = torch.cat((latents, control_latent), dim=1)
+            # 如果两者都为空，直接返回原 latents
+            if control_tensor is None and origin_control_tensor is None:
+                return latents.detach() 
+
+            self.vae.to(self.device_torch)            # 确保 VAE 在正确设备
+
+            # ---------- 1. 计算目标分辨率 ----------
+            if batch.tensor is not None:
+                target_h, target_w = batch.tensor.shape[2:]
+            else:  # caching latents 时，batch.tensor 为空
+                target_h = batch.file_items[0].crop_height
+                target_w = batch.file_items[0].crop_width
+
+            # ---------- 2. 统一处理函数 ----------
+            def _preprocess_control(t: torch.Tensor) -> torch.Tensor:
+                """归一化 [-1,1]、转 dtype/device、插值到目标分辨率"""
+                if t is None:
+                    return None
+                t = (t * 2 - 1).to(self.vae_device_torch, dtype=self.torch_dtype)  # 归一化 + 迁移
+                if t.shape[-2:] != (target_h, target_w):                           # 尺寸不符就插值
+                    t = F.interpolate(t, size=(target_h, target_w), mode="bilinear")
+                return t
+
+            control_tensor        = _preprocess_control(control_tensor)
+            origin_control_tensor = _preprocess_control(origin_control_tensor)
+
+            # ---------- 3. 编码成 latent ----------
+            cat_latents = [latents]          # 先放主 latent
+            for t in (control_tensor, origin_control_tensor):
+                if t is not None:
+                    encoded = self.encode_images(t).to(latents.device, latents.dtype)
+                    cat_latents.append(encoded)
+
+            # 按通道维拼接 (B, C_total, H', W')
+            latents = torch.cat(cat_latents, dim=1)
 
         return latents.detach() 
 

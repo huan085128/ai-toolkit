@@ -640,6 +640,8 @@ class ImageProcessingDTOMixin:
             self.get_latent()
             if self.has_control_image:
                 self.load_control_image()
+            if self.has_origin_control_image:
+                self.load_origin_control_image()
             if self.has_inpaint_image:
                 self.load_inpaint_image()
             if self.has_clip_image:
@@ -737,6 +739,8 @@ class ImageProcessingDTOMixin:
         if not only_load_latents:
             if self.has_control_image:
                 self.load_control_image()
+            if self.has_origin_control_image:
+                self.load_origin_control_image()
             if self.has_inpaint_image:
                 self.load_inpaint_image()
             if self.has_clip_image:
@@ -931,6 +935,108 @@ class ControlFileItemDTOMixin:
 
     def cleanup_control(self: 'FileItemDTO'):
         self.control_tensor = None
+
+
+class OriginControlFileItemDTOMixin:
+    def __init__(self: 'FileItemDTO', *args, **kwargs):
+        if hasattr(super(), '__init__'):
+            super().__init__(*args, **kwargs)
+        self.has_origin_control_image = False
+        self.origin_control_path: Union[str, List[str], None] = None
+        self.origin_control_tensor: Union[torch.Tensor, None] = None
+        dataset_config: 'DatasetConfig' = kwargs.get('dataset_config', None)
+        self.full_size_origin_control_images = False
+        if dataset_config.origin_control_path is not None:
+            # find the origin control image path
+            origin_control_path_list = dataset_config.origin_control_path
+            if not isinstance(origin_control_path_list, list):
+                origin_control_path_list = [origin_control_path_list]
+            self.full_size_origin_control_images = dataset_config.full_size_origin_control_images
+            # we are using control images
+            img_path = kwargs.get('path', None)
+            file_name_no_ext = os.path.splitext(os.path.basename(img_path))[0]
+            found_origin_control_images = []
+            for origin_control_path in origin_control_path_list:
+                for ext in img_ext_list:
+                    if os.path.exists(os.path.join(origin_control_path, file_name_no_ext + ext)):
+                        found_origin_control_images.append(os.path.join(origin_control_path, file_name_no_ext + ext))
+                        self.has_origin_control_image = True
+                        break
+            self.origin_control_path = found_origin_control_images
+            if len(self.origin_control_path) == 0:
+                self.origin_control_path = None
+            elif len(self.origin_control_path) == 1:
+                # only do one
+                self.origin_control_path = self.origin_control_path[0]
+
+    def load_origin_control_image(self: 'FileItemDTO'):
+        origin_control_tensors = []
+        origin_control_path_list = self.origin_control_path
+        if not isinstance(self.origin_control_path, list):
+            origin_control_path_list = [self.origin_control_path]
+        
+        for origin_control_path in origin_control_path_list:
+            try:
+                img = Image.open(origin_control_path).convert('RGB')
+                img = exif_transpose(img)
+            except Exception as e:
+                print_acc(f"Error: {e}")
+                print_acc(f"Error loading image: {origin_control_path}")
+
+            if not self.full_size_origin_control_images:
+                # we just scale them to 512x512:
+                w, h = img.size
+                img = img.resize((512, 512), Image.BICUBIC)
+
+            else:
+                w, h = img.size
+                if w > h and self.scale_to_width < self.scale_to_height:
+                    # throw error, they should match
+                    raise ValueError(
+                        f"unexpected values: w={w}, h={h}, file_item.scale_to_width={self.scale_to_width}, file_item.scale_to_height={self.scale_to_height}, file_item.path={self.path}")
+                elif h > w and self.scale_to_height < self.scale_to_width:
+                    # throw error, they should match
+                    raise ValueError(
+                        f"unexpected values: w={w}, h={h}, file_item.scale_to_width={self.scale_to_width}, file_item.scale_to_height={self.scale_to_height}, file_item.path={self.path}")
+
+                if self.flip_x:
+                    # do a flip
+                    img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                if self.flip_y:
+                    # do a flip
+                    img = img.transpose(Image.FLIP_TOP_BOTTOM)
+
+                if self.dataset_config.buckets:
+                    # scale and crop based on file item
+                    img = img.resize((self.scale_to_width, self.scale_to_height), Image.BICUBIC)
+                    # img = transforms.CenterCrop((self.crop_height, self.crop_width))(img)
+                    # crop
+                    img = img.crop((
+                        self.crop_x,
+                        self.crop_y,
+                        self.crop_x + self.crop_width,
+                        self.crop_y + self.crop_height
+                    ))
+                else:
+                    raise Exception("Control images not supported for non-bucket datasets")
+            transform = transforms.Compose([
+                transforms.ToTensor(),
+            ])
+            if self.aug_replay_spatial_transforms:
+                tensor = self.augment_spatial_control(img, transform=transform)
+            else:
+                tensor = transform(img)
+            origin_control_tensors.append(tensor)
+            
+        if len(origin_control_tensors) == 0:
+            self.origin_control_tensor = None
+        elif len(origin_control_tensors) == 1:
+            self.origin_control_tensor = origin_control_tensors[0]
+        else:
+            self.origin_control_tensor = torch.stack(origin_control_tensors, dim=0)
+
+    def cleanup_origin_control(self: 'FileItemDTO'):
+        self.origin_control_tensor = None
 
 
 class ClipImageFileItemDTOMixin:

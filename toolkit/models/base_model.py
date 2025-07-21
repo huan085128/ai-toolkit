@@ -694,6 +694,7 @@ class BaseModel:
             latents: torch.Tensor,
             text_embeddings: Union[PromptEmbeds, None] = None,
             timestep: Union[int, torch.Tensor] = 1,
+            reg_timestep: Union[int, torch.Tensor] = 0,
             guidance_scale=7.5,
             guidance_rescale=0,
             add_time_ids=None,
@@ -739,10 +740,14 @@ class BaseModel:
         latents = latents.to(self.device_torch)
         text_embeddings = text_embeddings.to(self.device_torch)
         timestep = timestep.to(self.device_torch)
+        reg_timestep = reg_timestep.to(self.device_torch)
 
         # if timestep is zero dim, unsqueeze it
         if len(timestep.shape) == 0:
             timestep = timestep.unsqueeze(0)
+        
+        if len(reg_timestep.shape) == 0:
+            reg_timestep = reg_timestep.unsqueeze(0)
 
         # if we only have 1 timestep, we can just use the same timestep for all
         if timestep.shape[0] == 1 and latents.shape[0] > 1:
@@ -751,6 +756,13 @@ class BaseModel:
                 timestep = timestep.repeat(latents.shape[0])
             else:
                 timestep = timestep.repeat(latents.shape[0], 0)
+        
+        if reg_timestep.shape[0] == 1 and latents.shape[0] > 1:
+            # check if it is rank 1 or 2
+            if len(reg_timestep.shape) == 1:
+                reg_timestep = reg_timestep.repeat(latents.shape[0])
+            else:
+                reg_timestep = reg_timestep.repeat(latents.shape[0], 0)
 
         # handle t2i adapters
         if 'down_intrablock_additional_residuals' in kwargs:
@@ -795,6 +807,7 @@ class BaseModel:
                 # if we are doing classifier free guidance, need to double up
                 latent_model_input = torch.cat([latents] * 2, dim=0)
                 timestep = torch.cat([timestep] * 2)
+                reg_timestep = torch.cat([reg_timestep] * 2)
             else:
                 latent_model_input = latents
 
@@ -808,8 +821,11 @@ class BaseModel:
                     if ts_bs == 1:
                         timestep = torch.cat(
                             [timestep] * latent_model_input.shape[0])
+                        reg_timestep = torch.cat(
+                            [reg_timestep] * latent_model_input.shape[0])
                     elif ts_bs * 2 == latent_model_input.shape[0]:
                         timestep = torch.cat([timestep] * 2, dim=0)
+                        reg_timestep = torch.cat([reg_timestep] * 2, dim=0)
                     else:
                         raise ValueError(
                             f"Batch size of latents {latent_model_input.shape[0]} must be the same or half the batch size of timesteps {timestep.shape[0]}")
@@ -838,6 +854,7 @@ class BaseModel:
             latent_model_input=latent_model_input,
             timestep=timestep,
             text_embeddings=text_embeddings,
+            reg_timestep=reg_timestep,
             **kwargs
         )
 

@@ -1135,7 +1135,6 @@ class BaseSDTrainProcess(BaseTrainProcess):
 
                     # show_latents(latents, self.sd.vae, 'latents')
 
-
                 if batch.unconditional_tensor is not None and batch.unconditional_latents is None:
                     unconditional_imgs = batch.unconditional_tensor
                     unconditional_imgs = unconditional_imgs.to(self.device_torch, dtype=dtype)
@@ -1275,6 +1274,11 @@ class BaseSDTrainProcess(BaseTrainProcess):
             with self.timer('convert_timestep_indices_to_timesteps'):
                 # convert the timestep_indices to a timestep
                 timesteps = self.sd.noise_scheduler.timesteps[timestep_indices.long()]
+                reg_timesteps = torch.tensor(
+                    self.train_config.reg_timestep,
+                    dtype=timesteps.dtype,
+                    device=timesteps.device
+                )
                 
             with self.timer('prepare_noise'):
                 # get noise
@@ -1383,12 +1387,14 @@ class BaseSDTrainProcess(BaseTrainProcess):
                     # just double it
                     noisy_latents = double_up_tensor(noisy_latents)
                     timesteps = double_up_tensor(timesteps)
+                    reg_timesteps = double_up_tensor(reg_timesteps)
 
                 noise = double_up_tensor(noise)
-                # prompts are already updated above
+                # prompts are already updated above1
                 imgs = double_up_tensor(imgs)
                 batch.mask_tensor = double_up_tensor(batch.mask_tensor)
                 batch.control_tensor = double_up_tensor(batch.control_tensor)
+                batch.origin_control_tensor = double_up_tensor(batch.origin_control_tensor)
 
             noisy_latent_multiplier = self.train_config.noisy_latent_multiplier
 
@@ -1401,7 +1407,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
             noise.requires_grad = False
             noise = noise.detach()
 
-        return noisy_latents, noise, timesteps, conditioned_prompts, imgs
+        return noisy_latents, noise, timesteps, reg_timesteps, conditioned_prompts, imgs
 
     def setup_adapter(self):
         # t2i adapter
