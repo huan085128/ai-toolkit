@@ -62,6 +62,8 @@ class SampleConfig:
         if self.num_frames > 1 and self.ext not in ['webp']:
             print("Changing sample extention to animated webp")
             self.ext = 'webp'
+        self.use_alpha = kwargs.get('use_alpha', False)
+        
 
 
 class LormModuleSettingsConfig:
@@ -563,6 +565,7 @@ class ModelConfig:
         # only setup for some models but will prevent having to download the te for
         # 20 different model variants
         self.extras_name_or_path = kwargs.get("extras_name_or_path", self.name_or_path)
+        self.pretrained_vae_model = kwargs.get("pretrained_vae_model", None)
         
         # kwargs to pass to the model
         self.model_kwargs = kwargs.get("model_kwargs", {})
@@ -849,6 +852,9 @@ class DatasetConfig:
         # if true, will use a fask method to get image sizes. This can result in errors. Do not use unless you know what you are doing
         self.fast_image_size: bool = kwargs.get('fast_image_size', False)
 
+        # 使用AlphaVAE时必须启用
+        self.use_alpha_channel: bool = kwargs.get('use_alpha_channel', False)
+
 
 def preprocess_dataset_raw_config(raw_config: List[dict]) -> List[dict]:
     """
@@ -900,7 +906,8 @@ class GenerateImageConfig:
             logger: Optional[EmptyLogger] = None,
             num_frames: int = 1,
             fps: int = 15,
-            ctrl_idx: int = 0
+            ctrl_idx: int = 0, 
+            use_alpha: bool = False
     ):
         self.width: int = width
         self.height: int = height
@@ -933,6 +940,7 @@ class GenerateImageConfig:
         self.fps = fps
         self.ctrl_img = None
         self.ctrl_idx = ctrl_idx
+        self.use_alpha = use_alpha
         
 
         # prompt string will override any settings above
@@ -983,6 +991,7 @@ class GenerateImageConfig:
     def get_image_path(self, count: int = 0, max_count=0):
         filename = self._get_path_no_ext(count, max_count)
         ext = self.output_ext
+        ext = ".png"
         # if it does not start with a dot add one
         if ext[0] != '.':
             ext = '.' + ext

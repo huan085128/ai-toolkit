@@ -666,7 +666,12 @@ class ImageProcessingDTOMixin:
             np_img = np_img[:, :, :3]
             img = Image.fromarray(np_img)
 
-        img = img.convert('RGB')
+        if self.dataset_config.use_alpha_channel:
+            # 如果启用alpha通道，则转换为RGBA
+            img = img.convert('RGBA')
+        else:
+            # 否则，转换为RGB，丢弃alpha通道
+            img = img.convert('RGB')
         w, h = img.size
         if w > h and self.scale_to_width < self.scale_to_height:
             # throw error, they should match
@@ -842,6 +847,7 @@ class ControlFileItemDTOMixin:
         self.control_path: Union[str, List[str], None] = None
         self.control_tensor: Union[torch.Tensor, None] = None
         dataset_config: 'DatasetConfig' = kwargs.get('dataset_config', None)
+        self.use_alpha_channel = getattr(dataset_config, 'use_alpha_channel', False)
         self.full_size_control_images = False
         if dataset_config.control_path is not None:
             # find the control image path
@@ -875,7 +881,15 @@ class ControlFileItemDTOMixin:
         
         for control_path in control_path_list:
             try:
-                img = Image.open(control_path).convert('RGB')
+                img = Image.open(control_path)
+                
+                if self.use_alpha_channel:
+                    # 如果启用alpha通道，则转换为RGBA
+                    img = img.convert('RGBA')
+                else:
+                    # 否则，转换为RGB，丢弃alpha通道
+                    img = img.convert('RGB')
+                
                 img = exif_transpose(img)
             except Exception as e:
                 print_acc(f"Error: {e}")

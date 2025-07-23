@@ -138,8 +138,13 @@ class FluxKontextModel(BaseModel):
         text_encoder.to(self.device_torch, dtype=dtype)
 
         self.print_and_status_update("Loading VAE")
+        # vae = AutoencoderKL.from_pretrained(
+        #     base_model_path, subfolder="vae", torch_dtype=dtype)
+        pretrained_vae_model = self.model_config.pretrained_vae_model
         vae = AutoencoderKL.from_pretrained(
-            base_model_path, subfolder="vae", torch_dtype=dtype)
+            pretrained_vae_model or base_model_path,
+            subfolder=None if pretrained_vae_model else "vae",
+        )
 
         self.noise_scheduler = FluxKontextModel.get_train_scheduler()
 
@@ -216,7 +221,13 @@ class FluxKontextModel(BaseModel):
             )
         else:
             control_img = Image.open(gen_config.ctrl_img)
-            control_img = control_img.convert("RGB")
+            # self.print_and_status_update(f"*****************use_alpha:{gen_config.use_alpha}**************")
+            if gen_config.use_alpha:
+                # 如果启用alpha通道，则转换为RGBA
+                control_img = control_img.convert('RGBA')
+            else:
+                # 否则，转换为RGB，丢弃alpha通道
+                control_img = control_img.convert('RGB')
             # resize to width and height
             if control_img.size != (gen_config.width, gen_config.height):
                 control_img = control_img.resize(

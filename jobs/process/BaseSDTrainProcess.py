@@ -321,6 +321,7 @@ class BaseSDTrainProcess(BaseTrainProcess):
                 logger=self.logger,
                 num_frames=sample_config.num_frames,
                 fps=sample_config.fps,
+                use_alpha=sample_config.use_alpha,
                 **extra_args
             ))
 
